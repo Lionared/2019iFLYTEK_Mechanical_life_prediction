@@ -6,6 +6,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from multiprocessing import Pool
 
+
 #获取文件地址
 def get_filelist (dir,flielist):
 
@@ -18,8 +19,49 @@ def get_filelist (dir,flielist):
             get_filelist(new_dir,flielist)
     return flielist
 
-#处理数据,添加特征
-def preprocess (data,df,name):
+
+#修改工作时长小于0的值（暂定成nan之后删除）
+def trans_to_nan (hours):
+    if hours <0:
+        hours = np.nan
+    return hours
+
+
+#数据处理，去除部件工作时长为负数的值,并且每个时间点只保留k个值
+def preprocess (path,k):
+
+    raw_data = pd.read_csv(path)
+
+    #将部件工作时长<0的时长值改为nan并删除
+    raw_data['部件工作时长'] = raw_data['部件工作时长'].map(lambda r:trans_to_nan(r))
+    raw_data = raw_data.dropna()
+
+    #每个工作时长至多保留k个值
+    #提取部件工作时长列作为list方便处理
+    raw_list = raw_data['部件工作时长'].tolist()
+    for i in range(len(raw_list)-k):
+        counter = 1
+        #找到重复项最后一项的索引
+        while counter + i < len(raw_list):
+            if raw_list[i] == raw_list[i+counter]:
+                counter += 1
+            else:
+                break
+        #判断是否需要删除数据
+        if counter <= k:
+            continue
+        else:
+            for m in range(counter-k):
+                raw_list[i+k+m] = np.nan
+    #修改dataframe对应列
+    raw_data['部件工作时长'] = raw_list
+    raw_data = raw_data.dropna()
+
+    return raw_data
+
+
+#处理单个单本的数据,添加单个样本的特征
+def feature_project (data,df,name,k):
 
     #根据样本选择或处理特征
 
@@ -32,11 +74,15 @@ def preprocess (data,df,name):
         df[name + '均值'] = data.mean()
         df[name + '标准差'] = data.std()
     
-    #累积量参数不明白其意义，但随时间增加而增加，暂取最大值为特征
+    #累积量参数取最大值，k个周期的差分的均值与标准差作为特征
     elif name == '累积量参数1' or name == '累积量参数2':
         df[name] = data.max()
+        data = data.diff(periods = k)
+        data = data.dropna()
+        df[name + str(k) + '阶差分均值'] = data.mean()
+        df[name + str(k) + '阶差分标准差'] = data.std()
 
-    #电流信号主要集中分布在三段区间中，分别列出取均值与方差，加权后取为特征
+    #电流信号主要集中分布在三段区间中，分别列出取均值与标准差，加权后取为特征
     elif name == '电流信号':
         length = len(data)
         low_current = list(num for num in data if 0 <= num < 20)
@@ -52,7 +98,7 @@ def preprocess (data,df,name):
         df[name + '中电流段标准差'] = np.std(mid_current) * mid_percentage
         df[name + '高电流段标准差'] = np.std(high_current) * high_percentage
 
-    #流量信号主要集中分布在三段区间中，分别列出取均值与方差，加权后取为特征
+    #流量信号主要集中分布在三段区间中，分别列出取均值与标准差，加权后取为特征
     elif name == '流量信号':
         length = len(data)
         low_current = list(num for num in data if 0 <= num < 9)
@@ -68,7 +114,7 @@ def preprocess (data,df,name):
         df[name + '中流量段标准差'] = np.std(mid_current) * mid_percentage
         df[name + '高流量段标准差'] = np.std(high_current) * high_percentage
     
-    #压力信号1主要分布在两段区间上，同上取均值与方差加权后取为特征
+    #压力信号1主要分布在两段区间上，同上取均值与标准差加权后取为特征
     elif name == '压力信号1':
         length = len(data)
         low_pressure = list(num for num in data if 65 <= num <=75)
@@ -114,10 +160,27 @@ def preprocess (data,df,name):
 
     return df
 
-#处理单个训练样本
-def process_single_sample (path,train_percentage):
 
-    data = pd.read_csv(path)
+#耦合特征构造
+def coupled_feature (dataframe,df):
+    
+    #取出列名表
+    column_list = dataframe.columns.values.tolist()
+    #循环将特征两两相乘组合
+    for i in range (3,13):
+        for j in range (i+1,13):
+            mutiple = dataframe.iloc[:,[i]]*dataframe.iloc[:,[j]]
+            df[column_list[i] +'与'+ column_list[j] +'乘积的均值'] = mutiple.mean()
+            df[column_list[i] +'与'+ column_list[j] +'乘积的标准差'] = mutiple.std()
+    
+    return df
+
+
+#处理单个训练样本
+def process_single_sample (path,train_percentage,k):
+
+    #获取并预处理数据
+    data = preprocess(path,k)
     #获取该零件寿命
     work_life = data['部件工作时长'].max()
     #获取在寿命一定百分比时间的数据
@@ -127,6 +190,8 @@ def process_single_sample (path,train_percentage):
                        'device': data['设备类型'][0],
                        'rest_life':work_life-data['部件工作时长'].max()
                      }
+
+    #单项特征
     for item in ['部件工作时长',
                     '累积量参数1',
                     '累积量参数2',
@@ -140,10 +205,14 @@ def process_single_sample (path,train_percentage):
                     '开关1信号',
                     '开关2信号',
                     '告警信号1']:
-        dict_data=preprocess(data[item],dict_data,item)
-    features = pd.DataFrame(dict_data, index=[0])  
+        dict_data=feature_project(data[item],dict_data,item,k)
 
+    #耦合特征
+    dict_data=coupled_feature(data,dict_data)
+
+    features = pd.DataFrame(dict_data, index=[0])
     return features
+
 
 #整合处理训练集与测试集,并采用多线程
 def integrated_process (path_list,test_or_not):
@@ -186,6 +255,7 @@ def integrated_process (path_list,test_or_not):
     
     return features
 
+
 #主进程，调试使用
 if __name__ == '__main__':
 
@@ -195,11 +265,14 @@ if __name__ == '__main__':
     train_list = get_filelist(train_path,[])
     test_path = get_filelist(test_path,[])
 
+    data = process_single_sample(train_list[0],1,6)
+    print (data)
+    
     # #绘制图像观测数据分布特征
     # plt.figure()
     # for csv_path in train_list:
     #     raw_data = pd.read_csv(csv_path)
-    #     plt.scatter(raw_data['部件工作时长'],raw_data['压力信号2'])
+    #     plt.scatter(raw_data['部件工作时长'],raw_data['流量信号'])
 
     #     #窗口最大化
     #     mng = plt.get_current_fig_manager()
@@ -208,6 +281,6 @@ if __name__ == '__main__':
     #     plt.show()
 
     # train=integrated_process(train_list,False)
-    # test =integrated_process(4,test_list,True,func)
+    # test =integrated_process(test_list,True)
 
     # print (train)
