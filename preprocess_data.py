@@ -1,12 +1,17 @@
 #-*- coding: utf-8 -*-
 
 import os
+import time
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import lightgbm as lgb
 from multiprocessing import Pool
 from scipy.stats import pearsonr
+from sklearn.model_selection import KFold
 
+import warnings
+warnings.filterwarnings('ignore')
 
 #获取文件地址
 def get_filelist (dir,flielist):
@@ -195,8 +200,12 @@ def process_single_sample (path,train_percentage):
     data=data[data['部件工作时长']<=work_life*train_percentage]
     #创建数据集
     dict_data = { 'train_file_name': os.path.basename(path) + str(train_percentage),
-                       'device': data['设备类型'][0],
-                       'rest_life':work_life-data['部件工作时长'].max()
+                        'device': data['设备类型'][0],
+                        '开关1_sum':data['开关1信号'].sum(),
+                        '开关2_sum':data['开关2信号'].sum(),
+                        '告警1_sum':data['告警信号1'].sum(),
+                        'current_life':np.log(data['部件工作时长'].max()+1),
+                        'rest_life':np.log(work_life-data['部件工作时长'].max()+1)
                      }
 
     #单项特征
@@ -281,32 +290,36 @@ def compute_loss(target, predict):
 #pearson系数
 def pearson(train):
 
-    pearson_list = []
+    column_num_list = []
+
     for i in range(2,train.shape[1]-1):
         length = len(train['rest_life'])
         a = train.iloc[:,[i]].values.flatten()
         b = train['rest_life'].values.flatten()
         r,p = pearsonr(a,b) 
-        pearson_list.append(r)
-    return pearson_list
+        if r == np.nan:
+            column_num_list.append(i)
+    
+    train.drop(train.columns[column_num_list],axis=1,inplace=True)
+    return train
 
 
 #lgb
 def lgb_cv(train, params, fit_params,feature_names, nfold, seed,test):
     train_pred = pd.DataFrame({
-        'true': train[ycol],
+        'true': train['rest_life'],
         'pred': np.zeros(len(train))})
-    test_pred = pd.DataFrame({idx: test[idx], ycol: np.zeros(len(test))},columns=[idx,ycol])
+    test_pred = pd.DataFrame({'train_file_name': test['train_file_name'], 'rest_life': np.zeros(len(test))},columns=['train_file_name','rest_life'])
     kfolder = KFold(n_splits=nfold, shuffle=True, random_state=seed)
     for fold_id, (trn_idx, val_idx) in enumerate(kfolder.split(train)):
         print('\nFold_{fold_id} Training ================================\n'.format(fold_id = fold_id))
         lgb_trn = lgb.Dataset(
             data=train.iloc[trn_idx][feature_names],
-            label=train.iloc[trn_idx][ycol],
+            label=train.iloc[trn_idx]['rest_life'],
             feature_name=feature_names)
         lgb_val = lgb.Dataset(
             data=train.iloc[val_idx][feature_names],
-            label=train.iloc[val_idx][ycol],
+            label=train.iloc[val_idx]['rest_life'],
             feature_name=feature_names)
         lgb_reg = lgb.train(params=params, train_set=lgb_trn,
                             num_boost_round = fit_params['num_boost_round'], verbose_eval = fit_params['verbose_eval'],
@@ -317,8 +330,8 @@ def lgb_cv(train, params, fit_params,feature_names, nfold, seed,test):
             num_iteration=lgb_reg.best_iteration)
         
         train_pred.loc[val_idx, 'pred'] = val_pred
-        test_pred[ycol] += (np.exp(lgb_reg.predict(test[feature_names]))-1) 
-    test_pred[ycol] = test_pred[ycol] / nfold
+        test_pred['rest_life'] += (np.exp(lgb_reg.predict(test[feature_names]))-1) 
+    test_pred['rest_life'] = test_pred['rest_life'] / nfold
     score = compute_loss(pd.Series(np.exp(train_pred['true']) - 1).apply(max, args=(0,))
                          ,pd.Series(np.exp(train_pred['pred']) - 1).apply(max, args=(0,)))
     print('\nCV LOSS:', score)
@@ -328,12 +341,12 @@ def lgb_cv(train, params, fit_params,feature_names, nfold, seed,test):
 # ====== lgb ======
 params_lgb = {'num_leaves': 250, 
               'max_depth':5, 
-              'learning_rate': 0.02,
+              'learning_rate': 0.01,
               'objective': 'regression', 
               'boosting': 'gbdt',
               'verbosity': -1}
 
-fit_params_lgb = {'num_boost_round': 5000, 
+fit_params_lgb = {'num_boost_round': 800, 
                   'verbose_eval':200,
                   'early_stopping_rounds': 200}
 
@@ -341,6 +354,7 @@ fit_params_lgb = {'num_boost_round': 5000,
 if __name__ == '__main__':
 
     #获取路径集
+    start = time.time()
     train_path = 'train'
     test_path = 'test1'
     n=4
@@ -351,10 +365,11 @@ if __name__ == '__main__':
 
     func=process_single_sample
     train=integrated_process(n,train_list,False,func)
-    # p_list = pearson(train)
-    # print (p_list)
-    # test =integrated_process(n,test_list,True,func)
-    # print("done.", time.time()-start)
+    test =integrated_process(n,test_list,True,func)
+    print("done.", time.time()-start)
+
+    train_test=pd.concat([train,test],join='outer',axis=0).reset_index(drop=True)
+    train_test=pd.get_dummies(train_test,columns=['device'])
 
     # sub= lgb_cv(train_test.iloc[:train.shape[0]] ,params_lgb, fit_params_lgb, 
     #             feature_name, 5,2018,train_test.iloc[train.shape[0]:])
@@ -365,7 +380,41 @@ if __name__ == '__main__':
     # data = process_single_sample(train_list[0],1,12)
     # for i in range(data.shape[1]):
     #     print (data.iloc[:,[i]])
-    
+    nfold = 3
+    seed = 2018
+
+    column_names = train_test.columns.values.tolist()
+    special_column_names = ['device_S100','device_S26a','device_S508','device_S51d','device_Saa3','开关1_sum','开关2_sum','告警1_sum']
+    special_column_names = ['train_file_name'] + ['current_life'] + special_column_names + ['rest_life']
+
+    for item in special_column_names:
+        column_names.remove(item)
+        
+    train_test.fillna(0,inplace=True)
+        
+    for item in column_names:
+        std_temp = train_test[item].std()
+        
+        if std_temp <= 1:
+            train_test[item] = np.exp(train_test[item])
+            std_temp2 = train_test[item].std()
+            
+            #check the standard deviation again
+            if std_temp2 < 1:
+                del train_test[item]
+            
+        elif std_temp > 10:
+            train_test[item] = np.log(train_test[item] + 1)
+
+    train_test = pearson(train_test)
+    feature_name=list(filter(lambda x:x not in['train_file_name','rest_life'],train_test.columns))
+
+    sub= lgb_cv(train_test.iloc[:train.shape[0]] ,params_lgb, fit_params_lgb, 
+                feature_name, nfold,seed,train_test.iloc[train.shape[0]:])
+
+    sub.to_csv('baseline_sub1.csv',index=False)
+    print("process(es) done.", time.time()-start)
+
     
 ##----------------------这里是用于测试的函数----------------------##
 
