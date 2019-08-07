@@ -2,3 +2,5 @@
 .vscode/
 .git/
 .ipynb*
+train/
+test1/
