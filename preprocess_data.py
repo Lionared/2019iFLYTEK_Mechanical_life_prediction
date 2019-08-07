@@ -231,7 +231,9 @@ def process_single_sample (path, train_percentage):
 
 
 #整合处理训练集与测试集,并采用多线程
-def integrated_process(cpu, path_list, is_test, func):
+def integrated_process(cpu, path_list, max_num_files, is_test, func):
+    if max_num_files > 0:
+        path_list = path_list[:max_num_files]
     
     #测试集处理
     if is_test:
@@ -374,62 +376,65 @@ if __name__ == '__main__':
     train_list = get_filelist(train_path, [])
     test_list = get_filelist(test_path, [])
 
-    train_set_total = filelist_to_dataframe(train_list)
+    if not os.path.exists("./total_set.dataframe"):
+        train_set_total = filelist_to_dataframe(train_list)
+        train_set_total.to_pickle("./total_set.dataframe")
+    else:
+        train_set_total = pd.read_pickle("./total_set.dataframe")
+
     print(train_set_total)
-    type_labels = list(set(train_set_total["设备类型"].values))
-    print(type_labels)
 
-    func = process_single_sample
-    train = integrated_process(n, train_list, False, func)
-    test = integrated_process(n, test_list, True, func)
-    print("done.", time.time() - start)
-
-    train_test=pd.concat([train,test],join='outer',axis=0).reset_index(drop=True)
-    train_test=pd.get_dummies(train_test,columns=['device'])
-
-    # sub= lgb_cv(train_test.iloc[:train.shape[0]] ,params_lgb, fit_params_lgb, 
-    #             feature_name, 5,2018,train_test.iloc[train.shape[0]:])
-
+    # func = process_single_sample
+    # train = integrated_process(n, train_list, 10, False, func)
+    # test = integrated_process(n, test_list, 10, True, func)
+    # print("done.", time.time() - start)
+    #
+    # train_test=pd.concat([train,test],join='outer',axis=0).reset_index(drop=True)
+    # train_test=pd.get_dummies(train_test,columns=['device'])
+    #
+    # # sub= lgb_cv(train_test.iloc[:train.shape[0]] ,params_lgb, fit_params_lgb,
+    # #             feature_name, 5,2018,train_test.iloc[train.shape[0]:])
+    #
+    # # sub.to_csv('baseline_sub1.csv',index=False)
+    # # print("process(es) done.", time.time()-start)
+    #
+    # # data = process_single_sample(train_list[0],1,12)
+    # # for i in range(data.shape[1]):
+    # #     print (data.iloc[:,[i]])
+    # nfold = 3
+    # seed = 2018
+    #
+    # column_names = train_test.columns.values.tolist()
+    # special_column_names = ['device_S100','device_S26a','device_S508','device_S51d','device_Saa3','开关1_sum','开关2_sum','告警1_sum']
+    # special_column_names = ['train_file_name'] + ['current_life'] + special_column_names + ['rest_life']
+    #
+    # for item in special_column_names:
+    #     column_names.remove(item)
+    #
+    # train_test.fillna(0,inplace=True)
+    #
+    # for item in column_names:
+    #     std_temp = train_test[item].std()
+    #
+    #     if std_temp <= 1:
+    #         train_test[item] = np.exp(train_test[item])
+    #         std_temp2 = train_test[item].std()
+    #
+    #         #check the standard deviation again
+    #         if std_temp2 < 1:
+    #             del train_test[item]
+    #
+    #     elif std_temp > 10:
+    #         train_test[item] = np.log(train_test[item] + 1)
+    #
+    # train_test = pearson(train_test)
+    # feature_name=list(filter(lambda x:x not in['train_file_name','rest_life'],train_test.columns))
+    #
+    # sub= lgb_cv(train_test.iloc[:train.shape[0]] ,params_lgb, fit_params_lgb,
+    #             feature_name, nfold,seed,train_test.iloc[train.shape[0]:])
+    #
     # sub.to_csv('baseline_sub1.csv',index=False)
     # print("process(es) done.", time.time()-start)
-    
-    # data = process_single_sample(train_list[0],1,12)
-    # for i in range(data.shape[1]):
-    #     print (data.iloc[:,[i]])
-    nfold = 3
-    seed = 2018
-
-    column_names = train_test.columns.values.tolist()
-    special_column_names = ['device_S100','device_S26a','device_S508','device_S51d','device_Saa3','开关1_sum','开关2_sum','告警1_sum']
-    special_column_names = ['train_file_name'] + ['current_life'] + special_column_names + ['rest_life']
-
-    for item in special_column_names:
-        column_names.remove(item)
-        
-    train_test.fillna(0,inplace=True)
-        
-    for item in column_names:
-        std_temp = train_test[item].std()
-        
-        if std_temp <= 1:
-            train_test[item] = np.exp(train_test[item])
-            std_temp2 = train_test[item].std()
-            
-            #check the standard deviation again
-            if std_temp2 < 1:
-                del train_test[item]
-            
-        elif std_temp > 10:
-            train_test[item] = np.log(train_test[item] + 1)
-
-    train_test = pearson(train_test)
-    feature_name=list(filter(lambda x:x not in['train_file_name','rest_life'],train_test.columns))
-
-    sub= lgb_cv(train_test.iloc[:train.shape[0]] ,params_lgb, fit_params_lgb, 
-                feature_name, nfold,seed,train_test.iloc[train.shape[0]:])
-
-    sub.to_csv('baseline_sub1.csv',index=False)
-    print("process(es) done.", time.time()-start)
 
     
 ##----------------------这里是用于测试的函数----------------------##
