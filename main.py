@@ -7,6 +7,7 @@ import pandas as pd
 import lightgbm as lgb
 from multiprocessing import Pool
 from sklearn.model_selection import KFold
+from tqdm import tqdm
 
 import warnings
 
@@ -349,6 +350,14 @@ params_lgb = {'num_leaves': 250,
 fit_params_lgb = {'num_boost_round': 800,
                   'verbose_eval': 200,
                   'early_stopping_rounds': 30}
+
+
+def get_device_type(path):
+    _df = pd.read_csv(path)
+    if not _df.empty:
+        return _df['设备类型'][0]
+    return None
+
 
 # 执行主进程
 if __name__ == '__main__':
